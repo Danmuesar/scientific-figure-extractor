@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scientific Figure Extractor</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Fraunces:ital,wght@0,300;0,600;1,300&display=swap');
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0e0e0e;
+      --surface: #161616;
+      --surface-soft: #12170d;
+      --border: #2a2a2a;
+      --border-hi: #3d3d3d;
+      --text: #e8e4dc;
+      --muted: #8b8b8b;
+      --accent: #d4ff6e;
+      --accent-dim: #a8cc55;
+      --danger: #ff6b6b;
+      --mono: 'DM Mono', monospace;
+      --serif: 'Fraunces', Georgia, serif;
+    }
+
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top, rgba(212, 255, 110, 0.08), transparent 35%),
+        linear-gradient(180deg, #0a0a0a, #101010 45%, #0d0d0d);
+      color: var(--text);
+      font-family: var(--mono);
+    }
+
+    button, input {
+      font: inherit;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .header {
+      padding: 2rem 2.5rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: baseline;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      backdrop-filter: blur(10px);
+      background: rgba(14, 14, 14, 0.85);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+
+    .header-title {
+      font-family: var(--serif);
+      font-size: clamp(1.35rem, 2.4vw, 1.8rem);
+      font-weight: 300;
+      font-style: italic;
+      letter-spacing: -0.02em;
+    }
+
+    .header-tag {
+      font-size: 0.65rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .api-indicator {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .api-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--muted);
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+
+    .api-dot.ok {
+      background: var(--accent);
+      box-shadow: 0 0 10px rgba(212, 255, 110, 0.9);
+    }
+
+    .api-dot.err {
+      background: var(--danger);
+      box-shadow: 0 0 10px rgba(255, 107, 107, 0.35);
+    }
+
+    .shell {
+      width: min(1200px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 2rem 0 3rem;
+    }
+
+    .intro {
+      margin-top: 1rem;
+      padding: 1.1rem 1.25rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(22, 22, 22, 0.88);
+    }
+
+    .intro-title {
+      font-family: var(--serif);
+      font-size: 1.1rem;
+      font-style: italic;
+      font-weight: 300;
+      margin-bottom: 0.45rem;
+    }
+
+    .intro-copy {
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.7;
+      max-width: 720px;
+    }
+
+    .drop-area {
+      margin-top: 1rem;
+      border: 1px dashed var(--border-hi);
+      border-radius: 8px;
+      padding: 4rem 2rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s, transform 0.2s;
+      position: relative;
+      background: rgba(22, 22, 22, 0.85);
+    }
+
+    .drop-area:hover,
+    .drop-area.dragging {
+      border-color: var(--accent);
+      background: rgba(26, 31, 16, 0.95);
+      transform: translateY(-1px);
+    }
+
+    .drop-area input {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+
+    .drop-icon {
+      font-size: 2.5rem;
+      margin-bottom: 1rem;
+      display: block;
+      opacity: 0.45;
+    }
+
+    .drop-label {
+      font-family: var(--serif);
+      font-size: 1.35rem;
+      font-weight: 300;
+      font-style: italic;
+      margin-bottom: 0.5rem;
+    }
+
+    .drop-sub {
+      font-size: 0.74rem;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .processing,
+    .error-box,
+    .tip-box {
+      margin-top: 1rem;
+      padding: 1.25rem 1.5rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: rgba(22, 22, 22, 0.9);
+    }
+
+    .processing {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 2px solid var(--border-hi);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .processing-file {
+      font-size: 0.85rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .processing-text,
+    .tip-box,
+    .error-help {
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .error-box {
+      border-color: #3d1a1a;
+      background: #1a0e0e;
+      color: var(--danger);
+      display: flex;
+      gap: 0.75rem;
+      align-items: flex-start;
+    }
+
+    .toolbar {
+      margin-top: 1rem;
+      padding: 1rem 0 0;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .result-count {
+      font-family: var(--serif);
+      font-size: 1rem;
+      font-weight: 300;
+      font-style: italic;
+    }
+
+    .result-count span {
+      color: var(--accent);
+      font-style: normal;
+      font-weight: 600;
+    }
+
+    .toolbar-right {
+      margin-left: auto;
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .btn,
+    .fig-btn {
+      font-family: var(--mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s;
+      border: 1px solid var(--border-hi);
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .btn {
+      font-size: 0.72rem;
+      padding: 0.6rem 1rem;
+    }
+
+    .btn:hover,
+    .fig-btn:hover {
+      border-color: var(--text);
+      color: var(--text);
+    }
+
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #0e0e0e;
+      font-weight: 500;
+    }
+
+    .btn.primary:hover {
+      background: var(--accent-dim);
+      border-color: var(--accent-dim);
+      color: #0e0e0e;
+    }
+
+    .grid {
+      padding: 1.5rem 0 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .fig-card {
+      background: rgba(22, 22, 22, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      transition: border-color 0.2s, transform 0.15s;
+      animation: fadeUp 0.3s ease both;
+    }
+
+    .fig-card:hover {
+      border-color: var(--border-hi);
+      transform: translateY(-2px);
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .fig-img-wrap {
+      background: #111;
+      aspect-ratio: 4 / 3;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .fig-img-wrap img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    .img-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.2s;
+      font-size: 0.7rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .fig-img-wrap:hover .img-overlay {
+      opacity: 1;
+    }
+
+    .fig-meta {
+      padding: 0.95rem 1rem 1rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .fig-badge {
+      display: inline-flex;
+      gap: 0.4rem;
+      font-size: 0.62rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 0.55rem;
+      flex-wrap: wrap;
+    }
+
+    .fig-caption {
+      font-size: 0.75rem;
+      color: var(--muted);
+      line-height: 1.55;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      min-height: 3.5em;
+    }
+
+    .fig-actions {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+
+    .fig-btn {
+      font-size: 0.65rem;
+      padding: 0.35rem 0.65rem;
+    }
+
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.92);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      padding: 2rem;
+      cursor: zoom-out;
+      animation: fadeIn 0.15s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .lightbox img {
+      max-width: 90vw;
+      max-height: 85vh;
+      object-fit: contain;
+      border: 1px solid var(--border-hi);
+      border-radius: 8px;
+      cursor: default;
+      background: #111;
+    }
+
+    .lightbox-close {
+      position: fixed;
+      top: 1.5rem;
+      right: 1.5rem;
+      font-size: 0.7rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--muted);
+      cursor: pointer;
+      background: none;
+      border: none;
+      font-family: var(--mono);
+    }
+
+    .lightbox-close:hover {
+      color: var(--text);
+    }
+
+    .lightbox-caption {
+      position: fixed;
+      bottom: 1.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 0.75rem;
+      color: var(--muted);
+      max-width: min(720px, calc(100vw - 3rem));
+      text-align: center;
+      background: rgba(22, 22, 22, 0.96);
+      padding: 0.7rem 1rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      line-height: 1.5;
+    }
+
+    @media (max-width: 720px) {
+      .header {
+        padding: 1.25rem 1rem 1rem;
+      }
+
+      .shell {
+        width: min(100%, calc(100% - 1rem));
+        padding-bottom: 2rem;
+      }
+
+      .drop-area {
+        padding: 3rem 1rem;
+      }
+
+      .toolbar-right {
+        margin-left: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useCallback, useEffect, useRef, useState } = React;
+
+    const API = "";
+
+    function App() {
+      const [apiOk, setApiOk] = useState(null);
+      const [dragging, setDragging] = useState(false);
+      const [processing, setProcessing] = useState(false);
+      const [filename, setFilename] = useState("");
+      const [error, setError] = useState("");
+      const [figures, setFigures] = useState([]);
+      const [zipBlob, setZipBlob] = useState(null);
+      const [lightbox, setLightbox] = useState(null);
+      const fileRef = useRef(null);
+
+      const revokeFigureUrls = useCallback((items) => {
+        items.forEach((item) => {
+          if (item.url) URL.revokeObjectURL(item.url);
+        });
+      }, []);
+
+      const clearResults = useCallback(() => {
+        setFigures((current) => {
+          revokeFigureUrls(current);
+          return [];
+        });
+        setZipBlob(null);
+      }, [revokeFigureUrls]);
+
+      const pingApi = useCallback(async () => {
+        try {
+          const response = await fetch(`${API}/health`, { method: "GET" });
+          setApiOk(response.ok);
+        } catch (err) {
+          setApiOk(false);
+        }
+      }, []);
+
+      useEffect(() => {
+        pingApi();
+      }, [pingApi]);
+
+      useEffect(() => {
+        if (!lightbox) return;
+
+        const onKeyDown = (event) => {
+          if (event.key === "Escape") {
+            setLightbox(null);
+          }
+        };
+
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+      }, [lightbox]);
+
+      useEffect(() => {
+        return () => revokeFigureUrls(figures);
+      }, [figures, revokeFigureUrls]);
+
+      const run = useCallback(async (file) => {
+        if (!file) return;
+
+        if (!file.name.toLowerCase().endsWith(".pdf")) {
+          setError("Please upload a PDF file.");
+          return;
+        }
+
+        setError("");
+        clearResults();
+        setFilename(file.name);
+        setProcessing(true);
+
+        const form = new FormData();
+        form.append("file", file);
+
+        try {
+          const response = await fetch(`${API}/extract`, {
+            method: "POST",
+            body: form
+          });
+
+          if (!response.ok) {
+            const detail = await response
+              .json()
+              .then((json) => json.detail)
+              .catch(() => response.statusText || "Request failed.");
+            throw new Error(detail);
+          }
+
+          const blob = await response.blob();
+          setZipBlob(blob);
+
+          const zip = await JSZip.loadAsync(blob);
+          const manifestFile = zip.file("figures.json");
+
+          if (!manifestFile) {
+            throw new Error("API returned a zip without figures.json.");
+          }
+
+          const manifest = JSON.parse(await manifestFile.async("string"));
+
+          const parsedFigures = await Promise.all(
+            manifest.map(async (entry, index) => {
+              const imageFile = zip.file(entry.crop_path);
+              if (!imageFile) {
+                throw new Error(`Missing image in zip: ${entry.crop_path}`);
+              }
+
+              const imageBlob = await imageFile.async("blob");
+              return {
+                ...entry,
+                key: `${entry.page}-${entry.figure_index}-${index}`,
+                url: URL.createObjectURL(imageBlob)
+              };
+            })
+          );
+
+          setFigures(parsedFigures);
+          setApiOk(true);
+        } catch (err) {
+          setError(err.message || "Something went wrong. Is the API running?");
+          setApiOk(false);
+        } finally {
+          setProcessing(false);
+        }
+      }, [clearResults]);
+
+      const onFile = (event) => {
+        run(event.target.files[0]);
+        event.target.value = "";
+      };
+
+      const onDrop = (event) => {
+        event.preventDefault();
+        setDragging(false);
+        run(event.dataTransfer.files[0]);
+      };
+
+      const downloadBlob = (href, downloadName) => {
+        const anchor = document.createElement("a");
+        anchor.href = href;
+        anchor.download = downloadName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      };
+
+      const downloadZip = () => {
+        if (!zipBlob || !filename) return;
+
+        const url = URL.createObjectURL(zipBlob);
+        downloadBlob(url, filename.replace(/\.pdf$/i, "_figures.zip"));
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      };
+
+      const downloadFigure = (figure) => {
+        downloadBlob(
+          figure.url,
+          `page${String(figure.page).padStart(3, "0")}_fig${String(figure.figure_index).padStart(2, "0")}.png`
+        );
+      };
+
+      const copyCaption = async (caption) => {
+        const text = caption || "";
+
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch (err) {
+          const input = document.createElement("textarea");
+          input.value = text;
+          document.body.appendChild(input);
+          input.select();
+          document.execCommand("copy");
+          input.remove();
+        }
+      };
+
+      const reset = () => {
+        setError("");
+        setFilename("");
+        setLightbox(null);
+        clearResults();
+      };
+
+      return (
+        <div className="app">
+          <header className="header">
+            <span className="header-title">Scientific Figure Extractor</span>
+            <span className="header-tag">Research PDF figures</span>
+            <div className="api-indicator">
+              <div className={`api-dot ${apiOk === true ? "ok" : apiOk === false ? "err" : ""}`}></div>
+            </div>
+          </header>
+
+          <main className="shell">
+            {!processing && figures.length === 0 && (
+              <div className="intro">
+                <div className="intro-title">Extract figures from research PDFs</div>
+                <div className="intro-copy">
+                  Upload a paper, report, or thesis to pull out figure images and captions in a clean downloadable set.
+                  Best results come from documents with clear figure layouts and readable captions.
+                </div>
+              </div>
+            )}
+
+            {!processing && figures.length === 0 && (
+              <>
+                <div
+                  className={`drop-area ${dragging ? "dragging" : ""}`}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setDragging(true);
+                  }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={onDrop}
+                  onClick={() => fileRef.current && fileRef.current.click()}
+                >
+                  <input ref={fileRef} type="file" accept=".pdf,application/pdf" onChange={onFile} />
+                  <span className="drop-icon">[ ]</span>
+                  <p className="drop-label">Upload a research PDF to detect labeled figures</p>
+                  <p className="drop-sub">Drag and drop or click to browse PDF only</p>
+                </div>
+
+                <div className="tip-box">
+                  Best results come from papers where figures are visually separated from body text and have captions directly
+                  below or near the figure. For public deployment, we will replace the local API setting with the Render URL.
+                </div>
+              </>
+            )}
+
+            {processing && (
+              <div className="processing">
+                <div className="spinner"></div>
+                <div>
+                  <div className="processing-file">{filename}</div>
+                  <div className="processing-text">Extracting figures via API...</div>
+                </div>
+              </div>
+            )}
+
+            {error && (
+              <div className="error-box">
+                <span>×</span>
+                <div>
+                  <div style={{ marginBottom: "0.3rem" }}>{error}</div>
+                  <div className="error-help">
+                    Make sure the app server is running and reachable from your browser.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {figures.length > 0 && (
+              <>
+                <div className="toolbar">
+                  <span className="result-count">
+                    <span>{figures.length}</span> figure{figures.length !== 1 ? "s" : ""} found in {filename}
+                  </span>
+                  <div className="toolbar-right">
+                    <button className="btn" onClick={reset}>New PDF</button>
+                    <button className="btn primary" onClick={downloadZip}>Download all (.zip)</button>
+                  </div>
+                </div>
+
+                <div className="grid">
+                  {figures.map((figure, index) => (
+                    <div
+                      key={figure.key}
+                      className="fig-card"
+                      style={{ animationDelay: `${index * 0.04}s` }}
+                    >
+                      <div className="fig-img-wrap" onClick={() => setLightbox(figure)}>
+                        <img src={figure.url} alt={figure.caption || "Extracted figure"} />
+                        <div className="img-overlay">View full size</div>
+                      </div>
+                      <div className="fig-meta">
+                        <div className="fig-badge">
+                          <span>Page {figure.page}</span>
+                          <span style={{ opacity: 0.4 }}>•</span>
+                          <span>Figure {figure.figure_index}</span>
+                        </div>
+                        <p className="fig-caption">{figure.caption || "No caption detected"}</p>
+                        <div className="fig-actions">
+                          <button className="fig-btn" onClick={() => downloadFigure(figure)}>PNG</button>
+                          <button className="fig-btn" onClick={() => copyCaption(figure.caption)}>Copy caption</button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </main>
+
+          {lightbox && (
+            <div className="lightbox" onClick={() => setLightbox(null)}>
+              <button className="lightbox-close" onClick={() => setLightbox(null)}>Close Esc</button>
+              <img src={lightbox.url} alt={lightbox.caption || "Extracted figure"} onClick={(event) => event.stopPropagation()} />
+              {lightbox.caption && <div className="lightbox-caption">{lightbox.caption}</div>}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
