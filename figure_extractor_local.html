@@ -178,6 +178,37 @@
       text-transform: uppercase;
     }
 
+    .feature-strip {
+      margin-top: 1rem;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.9rem;
+    }
+
+    .feature-card {
+      padding: 1rem 1rem 0.95rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(212, 255, 110, 0.05), transparent 55%),
+        rgba(22, 22, 22, 0.88);
+    }
+
+    .feature-kicker {
+      display: inline-block;
+      margin-bottom: 0.55rem;
+      font-size: 0.62rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .feature-text {
+      font-size: 0.76rem;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+
     .processing,
     .error-box,
     .tip-box {
@@ -503,6 +534,10 @@
         padding: 3rem 1rem;
       }
 
+      .feature-strip {
+        grid-template-columns: 1fr;
+      }
+
       .toolbar-right {
         margin-left: 0;
       }
@@ -555,6 +590,22 @@
         });
         setZipBlob(null);
       }, [revokeFigureUrls]);
+
+      const wait = useCallback((ms) => {
+        return new Promise((resolve) => window.setTimeout(resolve, ms));
+      }, []);
+
+      const fetchWithRetry = useCallback(async (url, options, retries = 1) => {
+        try {
+          return await fetch(url, options);
+        } catch (err) {
+          if (retries <= 0) {
+            throw err;
+          }
+          await wait(2500);
+          return fetchWithRetry(url, options, retries - 1);
+        }
+      }, [wait]);
 
       const pingApi = useCallback(async () => {
         try {
@@ -650,10 +701,10 @@
         form.append("file", file);
 
         try {
-          const response = await fetch(`${API}/extract`, {
+          const response = await fetchWithRetry(`${API}/extract`, {
             method: "POST",
             body: form
-          });
+          }, 1);
 
           if (!response.ok) {
             const detail = await response
@@ -695,15 +746,21 @@
           setFigures(parsedFigures);
           setApiOk(true);
         } catch (err) {
-          setError(err.message || "Something went wrong. Is the API running?");
-          setApiOk(false);
+          const message = err?.message || "Something went wrong.";
+          if (/failed to fetch/i.test(message)) {
+            setError("Connection interrupted during upload or extraction. On mobile, keep this tab open and try again.");
+            markApiOfflineSoon();
+          } else {
+            setError(message);
+            setApiOk(false);
+          }
         } finally {
           window.setTimeout(() => {
             setProcessing(false);
             setProgress(0);
           }, 250);
         }
-      }, [clearResults]);
+      }, [clearResults, fetchWithRetry, markApiOfflineSoon]);
 
       const onFile = (event) => {
         run(event.target.files[0]);
@@ -806,6 +863,27 @@
                   <p className="drop-sub">Drag and drop or click to browse PDF only</p>
                 </div>
 
+                <div className="feature-strip">
+                  <div className="feature-card">
+                    <span className="feature-kicker">Extract</span>
+                    <div className="feature-text">
+                      Pull figure crops from academic PDFs into a cleaner visual set.
+                    </div>
+                  </div>
+                  <div className="feature-card">
+                    <span className="feature-kicker">Review</span>
+                    <div className="feature-text">
+                      Scan thumbnail previews, open any figure full size, and check captions quickly.
+                    </div>
+                  </div>
+                  <div className="feature-card">
+                    <span className="feature-kicker">Download</span>
+                    <div className="feature-text">
+                      Save single PNGs or grab the full ZIP export in one step.
+                    </div>
+                  </div>
+                </div>
+
               </>
             )}
 
@@ -827,7 +905,7 @@
                 </div>
                 <div>
                   <div className="processing-file">{filename}</div>
-                  <div className="processing-text">Extracting figures via API...</div>
+                  <div className="processing-text">Extracting...</div>
                 </div>
               </div>
             )}
@@ -838,7 +916,7 @@
                 <div>
                   <div style={{ marginBottom: "0.3rem" }}>{error}</div>
                   <div className="error-help">
-                    Make sure the app server is running and reachable from your browser.
+                    If you are on mobile, keep this tab open until extraction finishes, then try again if needed.
                   </div>
                 </div>
               </div>
