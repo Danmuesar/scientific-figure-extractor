@@ -194,17 +194,45 @@
       gap: 1rem;
     }
 
-    .spinner {
-      width: 28px;
-      height: 28px;
-      border: 2px solid var(--border-hi);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+    .progress-ring {
+      width: 72px;
+      height: 72px;
+      position: relative;
       flex-shrink: 0;
     }
 
-    @keyframes spin { to { transform: rotate(360deg); } }
+    .progress-ring svg {
+      width: 72px;
+      height: 72px;
+      transform: rotate(-90deg);
+      display: block;
+    }
+
+    .progress-track {
+      fill: none;
+      stroke: var(--border-hi);
+      stroke-width: 7;
+      opacity: 0.45;
+    }
+
+    .progress-value {
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 7;
+      stroke-linecap: round;
+      transition: stroke-dashoffset 0.35s ease;
+      filter: drop-shadow(0 0 5px rgba(212, 255, 110, 0.25));
+    }
+
+    .progress-label {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.82rem;
+      color: var(--text);
+    }
 
     .processing-file {
       font-size: 0.85rem;
@@ -497,7 +525,22 @@
       const [figures, setFigures] = useState([]);
       const [zipBlob, setZipBlob] = useState(null);
       const [lightbox, setLightbox] = useState(null);
+      const [progress, setProgress] = useState(0);
       const fileRef = useRef(null);
+      const offlineTimerRef = useRef(null);
+
+      const markApiOfflineSoon = useCallback(() => {
+        window.clearTimeout(offlineTimerRef.current);
+        offlineTimerRef.current = window.setTimeout(() => {
+          if (document.visibilityState === "visible") {
+            setApiOk(false);
+          }
+        }, 60000);
+      }, []);
+
+      const clearOfflineTimer = useCallback(() => {
+        window.clearTimeout(offlineTimerRef.current);
+      }, []);
 
       const revokeFigureUrls = useCallback((items) => {
         items.forEach((item) => {
@@ -515,16 +558,41 @@
 
       const pingApi = useCallback(async () => {
         try {
+          clearOfflineTimer();
           const response = await fetch(`${API}/health`, { method: "GET" });
           setApiOk(response.ok);
         } catch (err) {
-          setApiOk(false);
+          if (document.visibilityState === "visible") {
+            markApiOfflineSoon();
+          }
         }
-      }, []);
+      }, [clearOfflineTimer, markApiOfflineSoon]);
 
       useEffect(() => {
         pingApi();
       }, [pingApi]);
+
+      useEffect(() => {
+        const onVisibilityChange = () => {
+          if (document.visibilityState === "visible") {
+            pingApi();
+          } else {
+            clearOfflineTimer();
+          }
+        };
+
+        const onFocus = () => {
+          pingApi();
+        };
+
+        document.addEventListener("visibilitychange", onVisibilityChange);
+        window.addEventListener("focus", onFocus);
+
+        return () => {
+          document.removeEventListener("visibilitychange", onVisibilityChange);
+          window.removeEventListener("focus", onFocus);
+        };
+      }, [clearOfflineTimer, pingApi]);
 
       useEffect(() => {
         if (!lightbox) return;
@@ -543,6 +611,27 @@
         return () => revokeFigureUrls(figures);
       }, [figures, revokeFigureUrls]);
 
+      useEffect(() => {
+        return () => {
+          window.clearTimeout(offlineTimerRef.current);
+        };
+      }, []);
+
+      useEffect(() => {
+        if (!processing) return;
+
+        setProgress(8);
+        const timer = window.setInterval(() => {
+          setProgress((current) => {
+            if (current >= 92) return current;
+            const nextStep = current < 30 ? 8 : current < 60 ? 5 : current < 80 ? 3 : 2;
+            return Math.min(92, current + nextStep);
+          });
+        }, 350);
+
+        return () => window.clearInterval(timer);
+      }, [processing]);
+
       const run = useCallback(async (file) => {
         if (!file) return;
 
@@ -555,6 +644,7 @@
         clearResults();
         setFilename(file.name);
         setProcessing(true);
+        setProgress(6);
 
         const form = new FormData();
         form.append("file", file);
@@ -601,13 +691,17 @@
             })
           );
 
+          setProgress(100);
           setFigures(parsedFigures);
           setApiOk(true);
         } catch (err) {
           setError(err.message || "Something went wrong. Is the API running?");
           setApiOk(false);
         } finally {
-          setProcessing(false);
+          window.setTimeout(() => {
+            setProcessing(false);
+            setProgress(0);
+          }, 250);
         }
       }, [clearResults]);
 
@@ -665,8 +759,13 @@
         setError("");
         setFilename("");
         setLightbox(null);
+        setProgress(0);
         clearResults();
       };
+
+      const ringRadius = 26;
+      const ringCircumference = 2 * Math.PI * ringRadius;
+      const ringOffset = ringCircumference - (progress / 100) * ringCircumference;
 
       return (
         <div className="app">
@@ -707,16 +806,25 @@
                   <p className="drop-sub">Drag and drop or click to browse PDF only</p>
                 </div>
 
-                <div className="tip-box">
-                  Best results come from papers where figures are visually separated from body text and have captions directly
-                  below or near the figure. For public deployment, we will replace the local API setting with the Render URL.
-                </div>
               </>
             )}
 
             {processing && (
               <div className="processing">
-                <div className="spinner"></div>
+                <div className="progress-ring" aria-hidden="true">
+                  <svg viewBox="0 0 72 72">
+                    <circle className="progress-track" cx="36" cy="36" r={ringRadius}></circle>
+                    <circle
+                      className="progress-value"
+                      cx="36"
+                      cy="36"
+                      r={ringRadius}
+                      strokeDasharray={ringCircumference}
+                      strokeDashoffset={ringOffset}
+                    ></circle>
+                  </svg>
+                  <div className="progress-label">{progress}%</div>
+                </div>
                 <div>
                   <div className="processing-file">{filename}</div>
                   <div className="processing-text">Extracting figures via API...</div>
