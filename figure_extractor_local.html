@@ -674,9 +674,9 @@
         setProgress(8);
         const timer = window.setInterval(() => {
           setProgress((current) => {
-            if (current >= 92) return current;
-            const nextStep = current < 30 ? 8 : current < 60 ? 5 : current < 80 ? 3 : 2;
-            return Math.min(92, current + nextStep);
+            if (current >= 99) return current;
+            const nextStep = current < 30 ? 8 : current < 60 ? 5 : current < 80 ? 3 : current < 92 ? 2 : 1;
+            return Math.min(99, current + nextStep);
           });
         }, 350);
 
@@ -715,9 +715,11 @@
           }
 
           const blob = await response.blob();
+          setProgress((current) => Math.max(current, 94));
           setZipBlob(blob);
 
           const zip = await JSZip.loadAsync(blob);
+          setProgress((current) => Math.max(current, 97));
           const manifestFile = zip.file("figures.json");
 
           if (!manifestFile) {
@@ -725,6 +727,7 @@
           }
 
           const manifest = JSON.parse(await manifestFile.async("string"));
+          setProgress((current) => Math.max(current, 98));
 
           const parsedFigures = await Promise.all(
             manifest.map(async (entry, index) => {
@@ -742,6 +745,7 @@
             })
           );
 
+          setProgress((current) => Math.max(current, 99));
           setProgress(100);
           setFigures(parsedFigures);
           setApiOk(true);
@@ -823,6 +827,7 @@
       const ringRadius = 26;
       const ringCircumference = 2 * Math.PI * ringRadius;
       const ringOffset = ringCircumference - (progress / 100) * ringCircumference;
+      const processingLabel = progress >= 97 ? "Finalizing..." : "Extracting...";
 
       return (
         <div className="app">
@@ -905,7 +910,7 @@
                 </div>
                 <div>
                   <div className="processing-file">{filename}</div>
-                  <div className="processing-text">Extracting...</div>
+                  <div className="processing-text">{processingLabel}</div>
                 </div>
               </div>
             )}
