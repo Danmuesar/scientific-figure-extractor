@@ -291,7 +291,7 @@ def insert_wrapped_text(page: fitz.Page, rect: fitz.Rect, text: str, fontsize: f
     )
 
 
-def build_coordinates_pdf(report_items: List[dict]) -> bytes:
+def build_coordinates_pdf(report_items: List[dict], source_name: str = "") -> bytes:
     report = fitz.open()
     try:
         if not report_items:
@@ -309,8 +309,10 @@ def build_coordinates_pdf(report_items: List[dict]) -> bytes:
             bbox = item["bbox"]
             page = report.new_page(width=595, height=842)
             page.insert_text((50, 55), "Figure Coordinates Report", fontsize=18, fontname="helv")
+            if source_name:
+                page.insert_text((50, 78), f"Source PDF: {source_name}", fontsize=10, fontname="helv")
             page.insert_text(
-                (50, 85),
+                (50, 100 if source_name else 85),
                 f"Page {item['page']} | Figure {item['figure_index']}",
                 fontsize=12,
                 fontname="helv",
@@ -325,7 +327,7 @@ def build_coordinates_pdf(report_items: List[dict]) -> bytes:
                 f"width: {format_coord(bbox['width'])}\n"
                 f"height: {format_coord(bbox['height'])}"
             )
-            insert_wrapped_text(page, fitz.Rect(50, 115, 545, 230), coord_text, fontsize=10)
+            insert_wrapped_text(page, fitz.Rect(50, 130 if source_name else 115, 545, 240), coord_text, fontsize=10)
 
             caption = item.get("caption") or "No caption detected."
             insert_wrapped_text(page, fitz.Rect(50, 250, 545, 330), f"Caption: {caption}", fontsize=9)
@@ -339,7 +341,7 @@ def build_coordinates_pdf(report_items: List[dict]) -> bytes:
         report.close()
 
 
-def build_zip(pdf_bytes: bytes, figures: List[dict]) -> bytes:
+def build_zip(pdf_bytes: bytes, figures: List[dict], source_name: str = "") -> bytes:
     source_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         buffer = io.BytesIO()
@@ -378,7 +380,7 @@ def build_zip(pdf_bytes: bytes, figures: List[dict]) -> bytes:
                 )
 
             archive.writestr("figures.json", json.dumps(manifest, ensure_ascii=True, indent=2))
-            archive.writestr("figure_coordinates.pdf", build_coordinates_pdf(report_items))
+            archive.writestr("figure_coordinates.pdf", build_coordinates_pdf(report_items, source_name))
 
         return buffer.getvalue()
     finally:
@@ -408,7 +410,7 @@ async def extract(file: UploadFile = File(...)):
 
     try:
         figures = extract_figures(pdf_bytes)
-        zip_bytes = build_zip(pdf_bytes, figures)
+        zip_bytes = build_zip(pdf_bytes, figures, file.filename)
     except HTTPException:
         raise
     except Exception as exc:

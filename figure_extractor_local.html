@@ -458,6 +458,93 @@
       padding: 0.35rem 0.65rem;
     }
 
+    .batch-panel {
+      margin-top: 1rem;
+      padding: 1.25rem 1.5rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(22, 22, 22, 0.9);
+    }
+
+    .batch-head {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .batch-title {
+      font-family: var(--serif);
+      font-size: 1rem;
+      font-style: italic;
+      font-weight: 300;
+    }
+
+    .batch-summary {
+      margin-left: auto;
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .batch-bar {
+      height: 8px;
+      border-radius: 999px;
+      background: var(--border);
+      overflow: hidden;
+      margin-bottom: 1rem;
+    }
+
+    .batch-bar-fill {
+      height: 100%;
+      width: 0;
+      background: var(--accent);
+      transition: width 0.25s ease;
+    }
+
+    .job-list {
+      display: grid;
+      gap: 0.65rem;
+    }
+
+    .job-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.75rem 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .job-name {
+      font-size: 0.78rem;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .job-detail {
+      margin-top: 0.3rem;
+      font-size: 0.68rem;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .job-status {
+      font-size: 0.65rem;
+      color: var(--accent);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .job-status.failed {
+      color: var(--danger);
+    }
+
     .lightbox {
       position: fixed;
       inset: 0;
@@ -555,12 +642,12 @@
       const [apiOk, setApiOk] = useState(null);
       const [dragging, setDragging] = useState(false);
       const [processing, setProcessing] = useState(false);
-      const [filename, setFilename] = useState("");
+      const [batchName, setBatchName] = useState("");
       const [error, setError] = useState("");
       const [figures, setFigures] = useState([]);
+      const [jobs, setJobs] = useState([]);
       const [zipBlob, setZipBlob] = useState(null);
       const [lightbox, setLightbox] = useState(null);
-      const [progress, setProgress] = useState(0);
       const fileRef = useRef(null);
       const offlineTimerRef = useRef(null);
 
@@ -589,23 +676,8 @@
           return [];
         });
         setZipBlob(null);
+        setJobs([]);
       }, [revokeFigureUrls]);
-
-      const wait = useCallback((ms) => {
-        return new Promise((resolve) => window.setTimeout(resolve, ms));
-      }, []);
-
-      const fetchWithRetry = useCallback(async (url, options, retries = 1) => {
-        try {
-          return await fetch(url, options);
-        } catch (err) {
-          if (retries <= 0) {
-            throw err;
-          }
-          await wait(2500);
-          return fetchWithRetry(url, options, retries - 1);
-        }
-      }, [wait]);
 
       const pingApi = useCallback(async () => {
         try {
@@ -668,113 +740,218 @@
         };
       }, []);
 
-      useEffect(() => {
-        if (!processing) return;
+      const updateJob = useCallback((id, patch) => {
+        setJobs((current) => current.map((job) => (
+          job.id === id ? { ...job, ...patch } : job
+        )));
+      }, []);
 
-        setProgress(8);
-        const timer = window.setInterval(() => {
-          setProgress((current) => {
-            if (current >= 99) return current;
-            const nextStep = current < 30 ? 8 : current < 60 ? 5 : current < 80 ? 3 : current < 92 ? 2 : 1;
-            return Math.min(99, current + nextStep);
-          });
-        }, 350);
+      const sanitizeFolderName = (name) => {
+        const base = name.replace(/\.pdf$/i, "");
+        return base.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").replace(/\s+/g, "_") || "pdf";
+      };
 
-        return () => window.clearInterval(timer);
-      }, [processing]);
+      const uploadPdf = useCallback((file, jobId) => {
+        return new Promise((resolve, reject) => {
+          const form = new FormData();
+          form.append("file", file);
 
-      const run = useCallback(async (file) => {
-        if (!file) return;
+          const xhr = new XMLHttpRequest();
+          let extractTimer = null;
 
-        if (!file.name.toLowerCase().endsWith(".pdf")) {
-          setError("Please upload a PDF file.");
+          const stopExtractTimer = () => {
+            if (extractTimer) {
+              window.clearInterval(extractTimer);
+              extractTimer = null;
+            }
+          };
+
+          xhr.open("POST", `${API}/extract`);
+          xhr.responseType = "blob";
+
+          xhr.upload.onprogress = (event) => {
+            if (!event.lengthComputable) return;
+            const uploadProgress = Math.round((event.loaded / event.total) * 35);
+            updateJob(jobId, {
+              status: "uploading",
+              detail: `Uploading ${Math.min(100, Math.round((event.loaded / event.total) * 100))}%`,
+              progress: Math.max(5, uploadProgress),
+            });
+          };
+
+          xhr.upload.onload = () => {
+            updateJob(jobId, {
+              status: "extracting",
+              detail: "Upload complete. Extracting figures...",
+              progress: 40,
+            });
+            extractTimer = window.setInterval(() => {
+              setJobs((current) => current.map((job) => {
+                if (job.id !== jobId || job.status !== "extracting") return job;
+                return { ...job, progress: Math.min(92, job.progress + 3) };
+              }));
+            }, 600);
+          };
+
+          xhr.onerror = () => {
+            stopExtractTimer();
+            reject(new Error("Connection interrupted during upload or extraction."));
+          };
+
+          xhr.onload = async () => {
+            stopExtractTimer();
+            if (xhr.status < 200 || xhr.status >= 300) {
+              let message = xhr.statusText || "Request failed.";
+              try {
+                const text = await xhr.response.text();
+                const parsed = JSON.parse(text);
+                message = parsed.detail || message;
+              } catch (err) {
+                // Keep the status text.
+              }
+              reject(new Error(message));
+              return;
+            }
+
+            resolve(xhr.response);
+          };
+
+          xhr.send(form);
+        });
+      }, [updateJob]);
+
+      const copyZipEntries = async (sourceZip, targetZip, folderName) => {
+        const copies = [];
+        sourceZip.forEach((path, file) => {
+          if (file.dir) return;
+          copies.push(file.async("blob").then((blob) => {
+            targetZip.file(`${folderName}/${path}`, blob);
+          }));
+        });
+        await Promise.all(copies);
+      };
+
+      const parseFiguresFromZip = async (zip, sourceName, sourceFolder) => {
+        const manifestFile = zip.file("figures.json");
+
+        if (!manifestFile) {
+          throw new Error("API returned a zip without figures.json.");
+        }
+
+        const manifest = JSON.parse(await manifestFile.async("string"));
+        return Promise.all(
+          manifest.map(async (entry, index) => {
+            const imageFile = zip.file(entry.crop_path);
+            if (!imageFile) {
+              throw new Error(`Missing image in zip: ${entry.crop_path}`);
+            }
+
+            const imageBlob = await imageFile.async("blob");
+            return {
+              ...entry,
+              source_name: sourceName,
+              source_folder: sourceFolder,
+              key: `${sourceFolder}-${entry.page}-${entry.figure_index}-${index}`,
+              url: URL.createObjectURL(imageBlob)
+            };
+          })
+        );
+      };
+
+      const run = useCallback(async (fileList) => {
+        const files = Array.from(fileList || []);
+        if (files.length === 0) return;
+
+        const invalid = files.find((file) => !file.name.toLowerCase().endsWith(".pdf"));
+        if (invalid) {
+          setError(`Please upload PDF files only. ${invalid.name} is not a PDF.`);
           return;
         }
 
         setError("");
         clearResults();
-        setFilename(file.name);
+        setBatchName(files.length === 1 ? files[0].name : `${files.length} PDFs`);
         setProcessing(true);
-        setProgress(6);
 
-        const form = new FormData();
-        form.append("file", file);
+        const initialJobs = files.map((file, index) => ({
+          id: `${Date.now()}-${index}`,
+          name: file.name,
+          status: "waiting",
+          detail: "Waiting...",
+          progress: 0,
+          figures: null,
+        }));
+        setJobs(initialJobs);
 
-        try {
-          const response = await fetchWithRetry(`${API}/extract`, {
-            method: "POST",
-            body: form
-          }, 1);
+        const combinedZip = new JSZip();
+        let successfulExports = 0;
 
-          if (!response.ok) {
-            const detail = await response
-              .json()
-              .then((json) => json.detail)
-              .catch(() => response.statusText || "Request failed.");
-            throw new Error(detail);
+        for (let index = 0; index < files.length; index += 1) {
+          const file = files[index];
+          const job = initialJobs[index];
+          const folderName = `${String(index + 1).padStart(2, "0")}_${sanitizeFolderName(file.name)}`;
+
+          try {
+            updateJob(job.id, {
+              status: "uploading",
+              detail: "Starting upload...",
+              progress: 5,
+            });
+
+            const blob = await uploadPdf(file, job.id);
+            updateJob(job.id, {
+              status: "finalizing",
+              detail: "Building downloadable files...",
+              progress: 94,
+            });
+
+            const zip = await JSZip.loadAsync(blob);
+            const parsedFigures = await parseFiguresFromZip(zip, file.name, folderName);
+            await copyZipEntries(zip, combinedZip, folderName);
+
+            successfulExports += 1;
+            setFigures((current) => [...current, ...parsedFigures]);
+            updateJob(job.id, {
+              status: "complete",
+              detail: `${parsedFigures.length} figure${parsedFigures.length !== 1 ? "s" : ""} found`,
+              progress: 100,
+              figures: parsedFigures.length,
+            });
+            setApiOk(true);
+          } catch (err) {
+            const message = err?.message || "Something went wrong.";
+            updateJob(job.id, {
+              status: "failed",
+              detail: message,
+              progress: 100,
+            });
+            if (/connection interrupted|failed to fetch/i.test(message)) {
+              markApiOfflineSoon();
+            } else {
+              setApiOk(false);
+            }
           }
-
-          const blob = await response.blob();
-          setProgress((current) => Math.max(current, 94));
-          setZipBlob(blob);
-
-          const zip = await JSZip.loadAsync(blob);
-          setProgress((current) => Math.max(current, 97));
-          const manifestFile = zip.file("figures.json");
-
-          if (!manifestFile) {
-            throw new Error("API returned a zip without figures.json.");
-          }
-
-          const manifest = JSON.parse(await manifestFile.async("string"));
-          setProgress((current) => Math.max(current, 98));
-
-          const parsedFigures = await Promise.all(
-            manifest.map(async (entry, index) => {
-              const imageFile = zip.file(entry.crop_path);
-              if (!imageFile) {
-                throw new Error(`Missing image in zip: ${entry.crop_path}`);
-              }
-
-              const imageBlob = await imageFile.async("blob");
-              return {
-                ...entry,
-                key: `${entry.page}-${entry.figure_index}-${index}`,
-                url: URL.createObjectURL(imageBlob)
-              };
-            })
-          );
-
-          setProgress((current) => Math.max(current, 99));
-          setProgress(100);
-          setFigures(parsedFigures);
-          setApiOk(true);
-        } catch (err) {
-          const message = err?.message || "Something went wrong.";
-          if (/failed to fetch/i.test(message)) {
-            setError("Connection interrupted during upload or extraction. On mobile, keep this tab open and try again.");
-            markApiOfflineSoon();
-          } else {
-            setError(message);
-            setApiOk(false);
-          }
-        } finally {
-          window.setTimeout(() => {
-            setProcessing(false);
-            setProgress(0);
-          }, 250);
         }
-      }, [clearResults, fetchWithRetry, markApiOfflineSoon]);
+
+        if (successfulExports > 0) {
+          const finalBlob = await combinedZip.generateAsync({ type: "blob" });
+          setZipBlob(finalBlob);
+        } else {
+          setError("No PDFs were extracted successfully.");
+        }
+
+        setProcessing(false);
+      }, [clearResults, markApiOfflineSoon, updateJob, uploadPdf]);
 
       const onFile = (event) => {
-        run(event.target.files[0]);
+        run(event.target.files);
         event.target.value = "";
       };
 
       const onDrop = (event) => {
         event.preventDefault();
         setDragging(false);
-        run(event.dataTransfer.files[0]);
+        run(event.dataTransfer.files);
       };
 
       const downloadBlob = (href, downloadName) => {
@@ -787,17 +964,20 @@
       };
 
       const downloadZip = () => {
-        if (!zipBlob || !filename) return;
+        if (!zipBlob || !batchName) return;
 
         const url = URL.createObjectURL(zipBlob);
-        downloadBlob(url, filename.replace(/\.pdf$/i, "_figures.zip"));
+        const downloadName = batchName.endsWith(".pdf")
+          ? batchName.replace(/\.pdf$/i, "_figures.zip")
+          : "extracted_pdf_figures.zip";
+        downloadBlob(url, downloadName);
         setTimeout(() => URL.revokeObjectURL(url), 0);
       };
 
       const downloadFigure = (figure) => {
         downloadBlob(
           figure.url,
-          `page${String(figure.page).padStart(3, "0")}_fig${String(figure.figure_index).padStart(2, "0")}.png`
+          `${figure.source_folder || "pdf"}_page${String(figure.page).padStart(3, "0")}_fig${String(figure.figure_index).padStart(2, "0")}.png`
         );
       };
 
@@ -818,17 +998,17 @@
 
       const reset = () => {
         setError("");
-        setFilename("");
+        setBatchName("");
         setLightbox(null);
-        setProgress(0);
         clearResults();
       };
 
-      const ringRadius = 26;
-      const ringCircumference = 2 * Math.PI * ringRadius;
-      const ringOffset = ringCircumference - (progress / 100) * ringCircumference;
-      const processingLabel = progress >= 97 ? "Finalizing..." : "Extracting...";
-
+      const completedJobs = jobs.filter((job) => job.status === "complete").length;
+      const failedJobs = jobs.filter((job) => job.status === "failed").length;
+      const finishedJobs = completedJobs + failedJobs;
+      const overallProgress = jobs.length
+        ? Math.round(jobs.reduce((sum, job) => sum + job.progress, 0) / jobs.length)
+        : 0;
       return (
         <div className="app">
           <header className="header">
@@ -840,17 +1020,17 @@
           </header>
 
           <main className="shell">
-            {!processing && figures.length === 0 && (
+            {!processing && figures.length === 0 && jobs.length === 0 && (
               <div className="intro">
                 <div className="intro-title">Extract figures from research PDFs</div>
                 <div className="intro-copy">
-                  Upload a paper, report, or thesis to pull out figure images and captions in a clean downloadable set.
+                  Upload papers, reports, or theses to pull out figure images and captions in a clean downloadable set.
                   Best results come from documents with clear figure layouts and readable captions.
                 </div>
               </div>
             )}
 
-            {!processing && figures.length === 0 && (
+            {!processing && figures.length === 0 && jobs.length === 0 && (
               <>
                 <div
                   className={`drop-area ${dragging ? "dragging" : ""}`}
@@ -862,10 +1042,10 @@
                   onDrop={onDrop}
                   onClick={() => fileRef.current && fileRef.current.click()}
                 >
-                  <input ref={fileRef} type="file" accept=".pdf,application/pdf" onChange={onFile} />
+                  <input ref={fileRef} type="file" accept=".pdf,application/pdf" multiple onChange={onFile} />
                   <span className="drop-icon">[ ]</span>
-                  <p className="drop-label">Upload a research PDF to detect labeled figures</p>
-                  <p className="drop-sub">Drag and drop or click to browse PDF only</p>
+                  <p className="drop-label">Upload research PDFs to detect labeled figures</p>
+                  <p className="drop-sub">Drag and drop or click to browse PDF files</p>
                 </div>
 
                 <div className="feature-strip">
@@ -892,25 +1072,32 @@
               </>
             )}
 
-            {processing && (
-              <div className="processing">
-                <div className="progress-ring" aria-hidden="true">
-                  <svg viewBox="0 0 72 72">
-                    <circle className="progress-track" cx="36" cy="36" r={ringRadius}></circle>
-                    <circle
-                      className="progress-value"
-                      cx="36"
-                      cy="36"
-                      r={ringRadius}
-                      strokeDasharray={ringCircumference}
-                      strokeDashoffset={ringOffset}
-                    ></circle>
-                  </svg>
-                  <div className="progress-label">{progress}%</div>
+            {jobs.length > 0 && (
+              <div className="batch-panel">
+                <div className="batch-head">
+                  <div className="batch-title">
+                    {processing ? `Processing ${jobs.length} PDF${jobs.length !== 1 ? "s" : ""}` : "Processing complete"}
+                  </div>
+                  <div className="batch-summary">
+                    {finishedJobs} of {jobs.length} finished
+                    {failedJobs > 0 ? ` | ${failedJobs} failed` : ""}
+                  </div>
                 </div>
-                <div>
-                  <div className="processing-file">{filename}</div>
-                  <div className="processing-text">{processingLabel}</div>
+                <div className="batch-bar" aria-hidden="true">
+                  <div className="batch-bar-fill" style={{ width: `${overallProgress}%` }}></div>
+                </div>
+                <div className="job-list">
+                  {jobs.map((job) => (
+                    <div className="job-row" key={job.id}>
+                      <div>
+                        <div className="job-name">{job.name}</div>
+                        <div className="job-detail">{job.detail}</div>
+                      </div>
+                      <div className={`job-status ${job.status === "failed" ? "failed" : ""}`}>
+                        {job.status}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -931,7 +1118,7 @@
               <>
                 <div className="toolbar">
                   <span className="result-count">
-                    <span>{figures.length}</span> figure{figures.length !== 1 ? "s" : ""} found in {filename}
+                    <span>{figures.length}</span> figure{figures.length !== 1 ? "s" : ""} found
                   </span>
                   <div className="toolbar-right">
                     <button className="btn" onClick={reset}>New PDF</button>
@@ -952,6 +1139,7 @@
                       </div>
                       <div className="fig-meta">
                         <div className="fig-badge">
+                          <span>{figure.source_name}</span>
                           <span>Page {figure.page}</span>
                           <span style={{ opacity: 0.4 }}>•</span>
                           <span>Figure {figure.figure_index}</span>
