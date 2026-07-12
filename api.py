@@ -264,31 +264,121 @@ def extract_figures(pdf_bytes: bytes) -> List[dict]:
     return figures
 
 
+def rect_to_bbox(rect: fitz.Rect) -> dict:
+    return {
+        "x0": rect.x0,
+        "y0": rect.y0,
+        "x1": rect.x1,
+        "y1": rect.y1,
+        "width": rect.width,
+        "height": rect.height,
+        "unit": "pdf_points",
+    }
+
+
+def format_coord(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def insert_wrapped_text(page: fitz.Page, rect: fitz.Rect, text: str, fontsize: float = 10) -> None:
+    page.insert_textbox(
+        rect,
+        text,
+        fontsize=fontsize,
+        fontname="helv",
+        color=(0.12, 0.12, 0.12),
+        lineheight=1.2,
+    )
+
+
+def build_coordinates_pdf(report_items: List[dict]) -> bytes:
+    report = fitz.open()
+    try:
+        if not report_items:
+            page = report.new_page(width=595, height=842)
+            page.insert_text((50, 70), "Figure Coordinates Report", fontsize=18, fontname="helv")
+            insert_wrapped_text(
+                page,
+                fitz.Rect(50, 105, 545, 160),
+                "No figures were detected in this PDF.",
+                fontsize=11,
+            )
+            return report.tobytes()
+
+        for item in report_items:
+            bbox = item["bbox"]
+            page = report.new_page(width=595, height=842)
+            page.insert_text((50, 55), "Figure Coordinates Report", fontsize=18, fontname="helv")
+            page.insert_text(
+                (50, 85),
+                f"Page {item['page']} | Figure {item['figure_index']}",
+                fontsize=12,
+                fontname="helv",
+            )
+
+            coord_text = (
+                "Final bounding box coordinates in PDF points, measured from the top-left of the page.\n"
+                f"x0: {format_coord(bbox['x0'])}\n"
+                f"y0: {format_coord(bbox['y0'])}\n"
+                f"x1: {format_coord(bbox['x1'])}\n"
+                f"y1: {format_coord(bbox['y1'])}\n"
+                f"width: {format_coord(bbox['width'])}\n"
+                f"height: {format_coord(bbox['height'])}"
+            )
+            insert_wrapped_text(page, fitz.Rect(50, 115, 545, 230), coord_text, fontsize=10)
+
+            caption = item.get("caption") or "No caption detected."
+            insert_wrapped_text(page, fitz.Rect(50, 250, 545, 330), f"Caption: {caption}", fontsize=9)
+
+            image_rect = fitz.Rect(50, 355, 545, 790)
+            page.draw_rect(image_rect, color=(0.75, 0.75, 0.75), width=0.5)
+            page.insert_image(image_rect, stream=item["image_bytes"], keep_proportion=True)
+
+        return report.tobytes()
+    finally:
+        report.close()
+
+
 def build_zip(pdf_bytes: bytes, figures: List[dict]) -> bytes:
     source_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         buffer = io.BytesIO()
         manifest = []
+        report_items = []
 
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for figure in figures:
                 page = source_doc[figure["page"] - 1]
                 rect = fitz.Rect(figure["rect"])
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=rect, alpha=False)
+                image_bytes = pixmap.tobytes("png")
                 image_name = (
                     f"figures/page_{figure['page']:03d}_fig_{figure['figure_index']:02d}.png"
                 )
-                archive.writestr(image_name, pixmap.tobytes("png"))
+                archive.writestr(image_name, image_bytes)
+                bbox = rect_to_bbox(rect)
                 manifest.append(
                     {
                         "page": figure["page"],
                         "figure_index": figure["figure_index"],
                         "caption": figure["caption"],
+                        "rect": figure["rect"],
+                        "bbox": bbox,
                         "crop_path": image_name,
+                    }
+                )
+                report_items.append(
+                    {
+                        "page": figure["page"],
+                        "figure_index": figure["figure_index"],
+                        "caption": figure["caption"],
+                        "bbox": bbox,
+                        "image_bytes": image_bytes,
                     }
                 )
 
             archive.writestr("figures.json", json.dumps(manifest, ensure_ascii=True, indent=2))
+            archive.writestr("figure_coordinates.pdf", build_coordinates_pdf(report_items))
 
         return buffer.getvalue()
     finally:
