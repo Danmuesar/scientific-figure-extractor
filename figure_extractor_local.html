@@ -458,6 +458,56 @@
       padding: 0.35rem 0.65rem;
     }
 
+    .fig-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
+    .fig-img-placeholder {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      color: var(--muted);
+      font-size: 0.68rem;
+      line-height: 1.5;
+      letter-spacing: 0.08em;
+      text-align: center;
+      text-transform: uppercase;
+      background:
+        linear-gradient(135deg, rgba(212, 255, 110, 0.08), transparent 45%),
+        #111;
+    }
+
+    .source-section {
+      margin-top: 1.5rem;
+    }
+
+    .source-title {
+      margin-bottom: 0.85rem;
+      font-family: var(--serif);
+      font-size: 1.05rem;
+      font-weight: 300;
+      font-style: italic;
+      color: var(--text);
+    }
+
+    .source-title span {
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      font-style: normal;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .source-title.in-grid {
+      grid-column: 1 / -1;
+      margin-top: 1rem;
+    }
+
     .batch-panel {
       margin-top: 1rem;
       padding: 1.25rem 1.5rem;
@@ -637,6 +687,7 @@
     const { useCallback, useEffect, useRef, useState } = React;
 
     const API = "";
+    const MAX_PREVIEW_FIGURES = 80;
 
     function App() {
       const [apiOk, setApiOk] = useState(null);
@@ -821,17 +872,19 @@
       }, [updateJob]);
 
       const copyZipEntries = async (sourceZip, targetZip, folderName) => {
-        const copies = [];
+        const entries = [];
         sourceZip.forEach((path, file) => {
           if (file.dir) return;
-          copies.push(file.async("blob").then((blob) => {
-            targetZip.file(`${folderName}/${path}`, blob);
-          }));
+          entries.push({ path, file });
         });
-        await Promise.all(copies);
+
+        for (const entry of entries) {
+          const data = await entry.file.async("uint8array");
+          targetZip.file(`${folderName}/${entry.path}`, data);
+        }
       };
 
-      const parseFiguresFromZip = async (zip, sourceName, sourceFolder) => {
+      const parseFiguresFromZip = async (zip, sourceName, sourceFolder, previewSlots) => {
         const manifestFile = zip.file("figures.json");
 
         if (!manifestFile) {
@@ -841,18 +894,20 @@
         const manifest = JSON.parse(await manifestFile.async("string"));
         return Promise.all(
           manifest.map(async (entry, index) => {
+            const shouldPreview = index < previewSlots;
             const imageFile = zip.file(entry.crop_path);
-            if (!imageFile) {
+            if (shouldPreview && !imageFile) {
               throw new Error(`Missing image in zip: ${entry.crop_path}`);
             }
 
-            const imageBlob = await imageFile.async("blob");
+            const imageBlob = shouldPreview ? await imageFile.async("blob") : null;
             return {
               ...entry,
               source_name: sourceName,
               source_folder: sourceFolder,
               key: `${sourceFolder}-${entry.page}-${entry.figure_index}-${index}`,
-              url: URL.createObjectURL(imageBlob)
+              url: imageBlob ? URL.createObjectURL(imageBlob) : null,
+              preview_limited: !shouldPreview,
             };
           })
         );
@@ -883,8 +938,10 @@
         }));
         setJobs(initialJobs);
 
-        const combinedZip = new JSZip();
+        const combinedZip = files.length > 1 ? new JSZip() : null;
         let successfulExports = 0;
+        let singleExportBlob = null;
+        let previewSlotsRemaining = MAX_PREVIEW_FIGURES;
 
         for (let index = 0; index < files.length; index += 1) {
           const file = files[index];
@@ -901,19 +958,35 @@
             const blob = await uploadPdf(file, job.id);
             updateJob(job.id, {
               status: "finalizing",
-              detail: "Building downloadable files...",
+              detail: "Reading result manifest...",
               progress: 94,
             });
 
             const zip = await JSZip.loadAsync(blob);
-            const parsedFigures = await parseFiguresFromZip(zip, file.name, folderName);
-            await copyZipEntries(zip, combinedZip, folderName);
+            const parsedFigures = await parseFiguresFromZip(zip, file.name, folderName, previewSlotsRemaining);
+            if (combinedZip) {
+              updateJob(job.id, {
+                status: "finalizing",
+                detail: "Adding export to combined ZIP...",
+                progress: 97,
+              });
+              await copyZipEntries(zip, combinedZip, folderName);
+            } else {
+              singleExportBlob = blob;
+            }
 
             successfulExports += 1;
+            previewSlotsRemaining = Math.max(
+              0,
+              previewSlotsRemaining - parsedFigures.filter((figure) => figure.url).length
+            );
             setFigures((current) => [...current, ...parsedFigures]);
+            const previewedCount = parsedFigures.filter((figure) => figure.url).length;
             updateJob(job.id, {
               status: "complete",
-              detail: `${parsedFigures.length} figure${parsedFigures.length !== 1 ? "s" : ""} found`,
+              detail: parsedFigures.length > previewedCount
+                ? `${parsedFigures.length} figures found; previewing first ${previewedCount}`
+                : `${parsedFigures.length} figure${parsedFigures.length !== 1 ? "s" : ""} found`,
               progress: 100,
               figures: parsedFigures.length,
             });
@@ -934,8 +1007,12 @@
         }
 
         if (successfulExports > 0) {
-          const finalBlob = await combinedZip.generateAsync({ type: "blob" });
-          setZipBlob(finalBlob);
+          if (combinedZip) {
+            const finalBlob = await combinedZip.generateAsync({ type: "blob" });
+            setZipBlob(finalBlob);
+          } else {
+            setZipBlob(singleExportBlob);
+          }
         } else {
           setError("No PDFs were extracted successfully.");
         }
@@ -1009,6 +1086,14 @@
       const overallProgress = jobs.length
         ? Math.round(jobs.reduce((sum, job) => sum + job.progress, 0) / jobs.length)
         : 0;
+      const groupedFigures = figures.reduce((groups, figure) => {
+        const sourceName = figure.source_name || "PDF";
+        if (!groups[sourceName]) groups[sourceName] = [];
+        groups[sourceName].push(figure);
+        return groups;
+      }, {});
+      const sourceFigureCount = (sourceName) => groupedFigures[sourceName]?.length || 0;
+
       return (
         <div className="app">
           <header className="header">
@@ -1133,9 +1218,17 @@
                       className="fig-card"
                       style={{ animationDelay: `${index * 0.04}s` }}
                     >
-                      <div className="fig-img-wrap" onClick={() => setLightbox(figure)}>
-                        <img src={figure.url} alt={figure.caption || "Extracted figure"} />
-                        <div className="img-overlay">View full size</div>
+                      <div className="fig-img-wrap" onClick={() => figure.url && setLightbox(figure)}>
+                        {figure.url ? (
+                          <>
+                            <img src={figure.url} alt={figure.caption || "Extracted figure"} />
+                            <div className="img-overlay">View full size</div>
+                          </>
+                        ) : (
+                          <div className="fig-img-placeholder">
+                            Included in ZIP<br />Preview skipped for large export
+                          </div>
+                        )}
                       </div>
                       <div className="fig-meta">
                         <div className="fig-badge">
@@ -1146,7 +1239,7 @@
                         </div>
                         <p className="fig-caption">{figure.caption || "No caption detected"}</p>
                         <div className="fig-actions">
-                          <button className="fig-btn" onClick={() => downloadFigure(figure)}>PNG</button>
+                          <button className="fig-btn" disabled={!figure.url} onClick={() => downloadFigure(figure)}>PNG</button>
                           <button className="fig-btn" onClick={() => copyCaption(figure.caption)}>Copy caption</button>
                         </div>
                       </div>
